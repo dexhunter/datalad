@@ -1,0 +1,87 @@
+{
+  "noise_definition": "baseline_noise_pct is pstdev/median*100 over 15 timed calls after 3 untimed warmup calls, with gc disabled during sampling. Commands were pinned to one CPU with taskset -c 0.",
+  "excluded": [
+    "datalad/support/path.py get_parent_paths and _get_parent_paths_check: merged dexhunter perf PR https://github.com/datalad/datalad/pull/7979",
+    "AnnexRepo._save_add / _maybe_batched_add / _call_annex batch-add path: open upstream semver-performance PR https://github.com/datalad/datalad/pull/6977"
+  ],
+  "targets": [
+    {
+      "upstream_repo": "https://github.com/datalad/datalad",
+      "head_sha": "3e10c97bca1668b015f9a97b0aa17135f13eb927",
+      "file": "datalad/support/gitrepo.py",
+      "function": "_get_content_info_line_helper",
+      "native_test_cmd": "python3 -m pytest -q datalad/support/tests/test_fileinfo.py -k \"get_content_info or test_compare_content_info or test_info_path_inside_submodule\"",
+      "baseline_median_ms": 44.923,
+      "baseline_noise_pct": 0.65,
+      "tests_pass_on_baseline": true,
+      "bench_cmd": "taskset -c 0 python3 osspr-intake/harness/bench_targets.py _get_content_info_line_helper",
+      "workload": "8000 synthetic git ls-files --stage lines (type/sha present, so no stat) parsed into absolute pathlib paths",
+      "why_hot": "On a profile of GitRepo.get_content_info and diffstatus over 8000 committed files, this helper was almost all of the Python time. Each line builds a PurePosixPath and joins it onto the repo Path, which reparses and hashes the path."
+    },
+    {
+      "upstream_repo": "https://github.com/datalad/datalad",
+      "head_sha": "3e10c97bca1668b015f9a97b0aa17135f13eb927",
+      "file": "datalad/runner/utils.py",
+      "function": "LineSplitter.process",
+      "native_test_cmd": "python3 -m pytest -q datalad/runner/tests/test_utils.py",
+      "baseline_median_ms": 29.752,
+      "baseline_noise_pct": 2.06,
+      "tests_pass_on_baseline": true,
+      "bench_cmd": "taskset -c 0 python3 osspr-intake/harness/bench_targets.py LineSplitter.process",
+      "workload": "548790-byte NUL-separated ls-files -z style stream, fed in 4096-byte chunks to LineSplitter(separator=None), the mode GitRepo.call_git uses",
+      "why_hot": "separator=None calls splitlines twice on the accumulated buffer. git -z output has no newlines, so every chunk is one unterminated line and the whole buffer is rescanned. The same stream with separator='\\0' was about 0.3 ms."
+    },
+    {
+      "upstream_repo": "https://github.com/datalad/datalad",
+      "head_sha": "3e10c97bca1668b015f9a97b0aa17135f13eb927",
+      "file": "datalad/support/path.py",
+      "function": "get_filtered_paths_",
+      "native_test_cmd": "python3 -m pytest -q datalad/support/tests/test_path.py -k test_get_filtered_paths_",
+      "baseline_median_ms": 19.467,
+      "baseline_noise_pct": 1.3,
+      "tests_pass_on_baseline": true,
+      "bench_cmd": "taskset -c 0 python3 osspr-intake/harness/bench_targets.py get_filtered_paths_",
+      "workload": "8000 repo-relative paths filtered by 20 directory prefixes with include_within_path=True (get_submodules_ path constraint)",
+      "why_hot": "Called from GitRepo.get_submodules_ to constrain submodule paths. Every path is turned into a PurePosixPath and sorted as a tuple of parts before the merge walk."
+    },
+    {
+      "upstream_repo": "https://github.com/datalad/datalad",
+      "head_sha": "3e10c97bca1668b015f9a97b0aa17135f13eb927",
+      "file": "datalad/support/path.py",
+      "function": "split_ext",
+      "native_test_cmd": "python3 -m pytest -q datalad/support/tests/test_path.py -k test_split_ext",
+      "baseline_median_ms": 15.11,
+      "baseline_noise_pct": 1.5,
+      "tests_pass_on_baseline": true,
+      "bench_cmd": "taskset -c 0 python3 osspr-intake/harness/bench_targets.py split_ext",
+      "workload": "20000 filenames mixing .tar.gz, .nii.gz, and .txt, the git-annex splitShortExtensions rule used by addurls",
+      "why_hot": "addurls get_file_parts and get_url_parts call split_ext per row. The body splits, reverses, and dropwhile-filters the parts instead of scanning once from the right."
+    },
+    {
+      "upstream_repo": "https://github.com/datalad/datalad",
+      "head_sha": "3e10c97bca1668b015f9a97b0aa17135f13eb927",
+      "file": "datalad/support/annexrepo.py",
+      "function": "_proc_json_record",
+      "native_test_cmd": "python3 -m pytest -q datalad/support/tests/test_annexrepo.py -k test_annex_json_protocol",
+      "baseline_median_ms": 13.14,
+      "baseline_noise_pct": 2.12,
+      "tests_pass_on_baseline": true,
+      "bench_cmd": "taskset -c 0 python3 osspr-intake/harness/bench_targets.py _proc_json_record",
+      "workload": "8000 non-progress git-annex find --json records (success, key, bytesize, file) with no Total bar",
+      "why_hot": "AnnexJsonProtocol.pipe_data_received calls this for every JSON record. A cProfile of 4000 find records spent more time here than in json.loads: each record hashes a frozenset progress id and parses the annex key even when the record is not a byte-progress event and total_nbytes is unset. Does not overlap open PR 6977, which changes annex add --batch."
+    },
+    {
+      "upstream_repo": "https://github.com/datalad/datalad",
+      "head_sha": "3e10c97bca1668b015f9a97b0aa17135f13eb927",
+      "file": "datalad/config.py",
+      "function": "parse_gitconfig_dump",
+      "native_test_cmd": "python3 -m pytest -q datalad/tests/test_config.py -k test_parse_gitconfig_dump",
+      "baseline_median_ms": 6.488,
+      "baseline_noise_pct": 1.4,
+      "tests_pass_on_baseline": true,
+      "bench_cmd": "taskset -c 0 python3 osspr-intake/harness/bench_targets.py parse_gitconfig_dump",
+      "workload": "4000-key git config -z --list --show-origin dump (origin record plus key=value, repeated)",
+      "why_hot": "Every GitRepo and .gitmodules read goes through this parser. Each NUL record is regex-matched in _gitcfg_rec_to_keyvalue, and file: origins are wrapped in Path objects."
+    }
+  ]
+}
