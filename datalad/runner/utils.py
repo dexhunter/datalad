@@ -60,54 +60,43 @@ class LineSplitter:
         if data == "":
             return []
 
-        # Update remaining data before attempting to split lines.
-        if self.remaining_data is None:
-            self.remaining_data = ""
-        self.remaining_data += data
-
-        if self.separator is None:
+        separator = self.separator
+        # Detach the remaining data from the instance, so that it is only
+        # referenced locally and CPython can extend it in place instead of
+        # copying it, while a line stays unterminated over many chunks.
+        remaining, self.remaining_data = self.remaining_data or "", None
+        if separator is None:
             # If no separator was specified, use python's built in
-            # line split wisdom to split on any known line ending.
-            lines_with_ends = self.remaining_data.splitlines(keepends=True)
-            detected_lines = self.remaining_data.splitlines()
-
-            # If the last line is identical in lines with ends and
-            # lines without ends, it was unterminated, remove it
-            # from the list of detected lines and keep it for the
-            # next round
-            if lines_with_ends[-1] == detected_lines[-1]:
-                self.remaining_data = lines_with_ends[-1]
-                del lines_with_ends[-1]
-                del detected_lines[-1]
-            else:
-                self.remaining_data = None
-
-            if self.keep_ends:
-                return lines_with_ends
-            return detected_lines
-
+            # line split wisdom to split on any known line ending. The
+            # remaining data never ends with a line ending, so joining it
+            # with data cannot create a new one, and only data is split.
+            lines = data.splitlines(self.keep_ends)
+            # All line boundaries are unprintable, so the cheap check on
+            # the last character spares the costly one in most chunks.
+            last = data[-1]
+            terminated = not last.isprintable() and last.splitlines() != [last]
         else:
-            # Split lines on separator. This will create additional
-            # empty lines if `remaining_data` end with the separator.
-            detected_lines = self.remaining_data.split(self.separator)
+            # Only the tail of the remaining data can hold the start of a
+            # separator that is completed by data, so split just that tail
+            # and data, and prepend the rest to the first line.
+            start = max(len(remaining) - len(separator) + 1, 0)
+            lines = (remaining[start:] + data).split(separator)
+            remaining = remaining[:start]
+            terminated = data.endswith(separator)
+            if terminated:
+                # Drop the empty element that split() yields after the
+                # final separator, splitlines() yields none.
+                lines.pop()
 
-            # If replaced data did not end with the separator, it contains an
-            # unterminated line. We save that for the next round. Otherwise,
-            # we mark that we do not have remaining data.
-            if not data.endswith(self.separator):
-                self.remaining_data = detected_lines[-1]
-            else:
-                self.remaining_data = None
+        # An unterminated last line is kept for the next round.
+        remaining += lines[0]
+        lines[0] = remaining
+        if not terminated:
+            self.remaining_data = lines.pop()
 
-            # If replaced data ended with the canonical line ending, we
-            # have an extra empty line in detected_lines. If it did not
-            # end with canonical line ending, we have to remove the
-            # unterminated line.
-            del detected_lines[-1]
-
-            if self.keep_ends:
-                return [line + self.separator for line in detected_lines]
-            return detected_lines
+        if self.keep_ends and separator is not None:
+            return [line + separator for line in lines]
+        return lines
 
     def finish_processing(self) -> Optional[str]:
         return self.remaining_data
