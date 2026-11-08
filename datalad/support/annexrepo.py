@@ -612,18 +612,19 @@ class AnnexRepo(GitRepo, RepoInterface):
             return None
 
         # see: https://git-annex.branchable.com/internals/key_format/
-        key_parts = key.split('--')
-        key_fields = key_parts[0].split('-')
-        parsed = {field[0]: int(field[1:]) if field[1:].isdigit() else None
-                  for field in key_fields[1:]
-                  if field[0] in "sSC"}
-
-        # don't lookup the dict for the same things several times;
-        # Is there a faster (and more compact) way of doing this? Note, that
-        # locals() can't be updated.
-        s = parsed.get('s')
-        S = parsed.get('S')
-        C = parsed.get('C')
+        # the last occurrence of a field wins, non-digit values become None
+        s = S = C = None
+        for field in key.split('--', 1)[0].split('-')[1:]:
+            name = field[0]
+            if name in "sSC":
+                value = field[1:]
+                value = int(value) if value.isdigit() else None
+                if name == 's':
+                    s = value
+                elif name == 'S':
+                    S = value
+                else:
+                    C = value
 
         if S is None and C is None:
             return s  # also okay if s is None as well -> no size to report
@@ -3971,10 +3972,11 @@ class AnnexJsonProtocol(WitlessProtocol):
         # the keys is hard coded below so that the action record can be linked
         # to the final one.
         info = record.get("action") or record
-        return 'annexprogress-{}-{}'.format(
-            id(self),
-            hash(frozenset((k, info.get(k))
-                           for k in ["command", "key", "file"])))
+        get = info.get
+        # the global pbar id is 'annexprogress-<id(self)>' already
+        return '{}-{}'.format(
+            self._global_pbar_id,
+            hash((get("command"), get("key"), get("file"))))
 
     def _effective_total(self):
         # exclude full key-sizes for errored files; the bar's target is
@@ -3987,11 +3989,14 @@ class AnnexJsonProtocol(WitlessProtocol):
         # bytes were already on disk), subsequent events credit only the
         # delta. Paired with `_inflight_credited.pop` / `_file_resume_offset
         # .pop` in the non-progress branch on completion or error.
-        if pbar_id not in self._inflight_credited:
+        inflight = self._inflight_credited
+        last_credited = inflight.get(pbar_id)
+        if last_credited is None:
             self._file_resume_offset[pbar_id] = byte_progress
             self._resumed_bytes += byte_progress
-        self._byte_count += byte_progress - self._inflight_credited.get(pbar_id, 0)
-        self._inflight_credited[pbar_id] = byte_progress
+            last_credited = 0
+        self._byte_count += byte_progress - last_credited
+        inflight[pbar_id] = byte_progress
 
     def _emit_total_pbar_update(self, file_msg, byte_count):
         """Update the dataset-level "Total" pbar with current effective state.
@@ -4008,18 +4013,19 @@ class AnnexJsonProtocol(WitlessProtocol):
         if not self.total_nbytes or self._total_pbar_finished:
             return
         effective_total = self._effective_total()
+        error_count = self._error_count
         label = (
             'Total [errored: {} / {}]'.format(
-                self._error_count, bytes2human(self._error_bytes))
-            if self._error_count
+                error_count, bytes2human(self._error_bytes))
+            if error_count
             else 'Total'
         )
-        kwargs = dict(
-            label=label,
-            update=byte_count,
-            initial=self._resumed_bytes,
-            noninteractive_level=5,
-        )
+        kwargs = {
+            'label': label,
+            'update': byte_count,
+            'initial': self._resumed_bytes,
+            'noninteractive_level': 5,
+        }
         if effective_total != self._last_effective_total:
             kwargs['total'] = effective_total
             self._last_effective_total = effective_total
@@ -4050,15 +4056,22 @@ class AnnexJsonProtocol(WitlessProtocol):
     def _proc_json_record(self, j):
         # check for progress reports and act on them immediately
         # but only if there is something to build a progress report from
-        pbar_id = self._get_pbar_id(j)
-        known_pbar = pbar_id in self._pbars
         action = j.get('action')
-
         is_progress = action and 'byte-progress' in j
+        pbars = self._pbars
+        inflight = self._inflight_credited
+        # the progress id is only needed if it could match a known pbar or
+        # some in-flight bookkeeping
+        if is_progress or pbars or inflight or self._file_resume_offset:
+            pbar_id = self._get_pbar_id(j)
+        else:
+            pbar_id = None
+        known_pbar = pbar_id in pbars
+
         # ignore errors repeatedly reported in progress messages. Final message
         # will contain them
         if action and not is_progress:
-            for err_msg in action.pop('error-messages', []):
+            for err_msg in action.pop('error-messages', ()):
                 lgr.error(err_msg)
 
         if known_pbar and (not is_progress or
@@ -4070,7 +4083,7 @@ class AnnexJsonProtocol(WitlessProtocol):
                 'Finished annex action: {}'.format(action),
                 noninteractive_level=5,
             )
-            self._pbars.discard(pbar_id)
+            pbars.discard(pbar_id)
             if is_progress:
                 # The final record is yet to come.
                 return
@@ -4092,7 +4105,7 @@ class AnnexJsonProtocol(WitlessProtocol):
                     initial=byte_progress,
                     noninteractive_level=5,
                 )
-                self._pbars.add(pbar_id)
+                pbars.add(pbar_id)
             log_progress(
                 lgr.info,
                 pbar_id,
@@ -4118,22 +4131,26 @@ class AnnexJsonProtocol(WitlessProtocol):
         # historical behaviour (every non-progress record credited the bar)
         # and avoids silently rolling back a real transfer's bytes if a
         # future annex JSON omits the field.
-        succeeded = bool(j.get('success', True))
-        last_credited = self._inflight_credited.pop(pbar_id, 0)
-        resume_offset = self._file_resume_offset.pop(pbar_id, 0)
-        if key_bytes and succeeded:
-            # credit the residual that arrived without a final byte-progress
-            # tick (e.g. the last MB or a file too small to ever emit one)
-            self._byte_count += max(0, key_bytes - last_credited)
-        elif key_bytes and not succeeded:
-            # roll back any provisional credit -- those bytes are still on
-            # disk but no longer count toward the (now-shrunk) target. Also
-            # remove the file's resume contribution so tqdm's rate anchor
-            # follows along.
-            self._byte_count -= last_credited
-            self._resumed_bytes -= resume_offset
-            self._error_count += 1
-            self._error_bytes += key_bytes
+        # only pop when some in-flight bookkeeping could match the id
+        resume_offsets = self._file_resume_offset
+        last_credited = inflight.pop(pbar_id, 0) if inflight else 0
+        resume_offset = (
+            resume_offsets.pop(pbar_id, 0) if resume_offsets else 0)
+        if key_bytes:
+            if j.get('success', True):
+                # credit the residual that arrived without a final
+                # byte-progress tick (e.g. the last MB or a file too small
+                # to ever emit one)
+                self._byte_count += max(0, key_bytes - last_credited)
+            else:
+                # roll back any provisional credit -- those bytes are still
+                # on disk but no longer count toward the (now-shrunk)
+                # target. Also remove the file's resume contribution so
+                # tqdm's rate anchor follows along.
+                self._byte_count -= last_credited
+                self._resumed_bytes -= resume_offset
+                self._error_count += 1
+                self._error_bytes += key_bytes
         # don't do anything to the results for now in terms of normalization
         # TODO the protocol could be made aware of the runner's CWD and
         # also any dataset the annex command is operating on. This would
@@ -4141,18 +4158,19 @@ class AnnexJsonProtocol(WitlessProtocol):
         self.add_to_output(j)
 
         if self.total_nbytes and not self._total_pbar_finished:
+            global_pbar_id = self._global_pbar_id
             if self._effective_total() <= self._byte_count:
                 # take the global pbar down if it was ever created; skip the
                 # emit when it was not, so the handler does not lazily spawn
                 # an empty pbar at the very end of a no-progress run
-                if self._global_pbar_id in self._pbars:
+                if global_pbar_id in pbars:
                     log_progress(
                         lgr.info,
-                        self._global_pbar_id,
+                        global_pbar_id,
                         'Finished annex {}'.format(j.get('command', '')),
                         noninteractive_level=5,
                     )
-                    self._pbars.discard(self._global_pbar_id)
+                    pbars.discard(global_pbar_id)
                 self._total_pbar_finished = True
             else:
                 self._emit_total_pbar_update(
