@@ -1,0 +1,57 @@
+[
+  {
+    "upstream_repo": "datalad/datalad",
+    "head_sha": "e0b70552bca2ae583283bb57e18554c56f289682",
+    "file": "datalad/interface/utils.py",
+    "function": "get_tree_roots",
+    "native_test_cmd": "python3 -m pytest -q datalad/core/local/tests/test_save.py::test_save",
+    "bench_cmd": "python3 osspr-intake/harness/bench_get_tree_roots.py",
+    "baseline_median_ms": 2077.677551,
+    "baseline_noise_pct": 2.771062,
+    "tests_pass_on_baseline": true,
+    "workload": "6000 sibling subdataset paths (/data/study/sub-#####/ses-01), the set save() passes when each changed subdataset is its own root",
+    "notes": "For sibling datasets the coverage test and the child scan each walk the whole list, so this is quadratic in the number of datasets (about 2.1s at 6000, under 5ms with a sort and prefix-range query that keeps the same root map, including the current prefix-without-separator match)."
+  },
+  {
+    "upstream_repo": "datalad/datalad",
+    "head_sha": "e0b70552bca2ae583283bb57e18554c56f289682",
+    "file": "datalad/local/addurls.py",
+    "function": "Formatter.format",
+    "native_test_cmd": "python3 -m pytest -q datalad/local/tests/test_addurls.py::test_formatter datalad/local/tests/test_addurls.py::test_formatter_lower_case datalad/local/tests/test_addurls.py::test_formatter_no_idx_map datalad/local/tests/test_addurls.py::test_formatter_no_mapping_arg datalad/local/tests/test_addurls.py::test_formatter_placeholder_with_spaces datalad/local/tests/test_addurls.py::test_formatter_placeholder_nonpermitted_chars datalad/local/tests/test_addurls.py::test_formatter_missing_arg datalad/local/tests/test_addurls.py::test_repformatter",
+    "bench_cmd": "python3 osspr-intake/harness/bench_formatter.py",
+    "baseline_median_ms": 381.812777,
+    "baseline_noise_pct": 0.426994,
+    "tests_pass_on_baseline": true,
+    "workload": "40000 BIDS-style rows formatted with one multi-field filename template, as addurls does for every input record",
+    "notes": "string.Formatter reparses the same template on every row. Caching the parsed template on the Formatter (index map, missing value, and !l conversion unchanged) is on the order of 10x or more; an f-string of the same template is about 60x faster."
+  },
+  {
+    "upstream_repo": "datalad/datalad",
+    "head_sha": "e0b70552bca2ae583283bb57e18554c56f289682",
+    "file": "datalad/support/json_py.py",
+    "function": "load_stream",
+    "native_test_cmd": "python3 -m pytest -q datalad/support/tests/test_json_py.py::test_load_unicode_line_separator datalad/support/tests/test_json_py.py::test_dump2stream datalad/support/tests/test_json_py.py::test_loads",
+    "bench_cmd": "python3 osspr-intake/harness/bench_load_stream.py",
+    "baseline_median_ms": 167.810975,
+    "baseline_noise_pct": 2.976202,
+    "tests_pass_on_baseline": true,
+    "workload": "50000 one-line annex JSON records (file, key, success, command), the shape of a git-annex --json stream",
+    "notes": "Each record goes through a codecs StreamReader and the loads() wrapper. A paired json.loads over the same newline-split bytes was about 83ms versus 151ms for load_stream, and splitting on newline still keeps U+2028 inside a string (test_load_unicode_line_separator)."
+  },
+  {
+    "upstream_repo": "datalad/datalad",
+    "head_sha": "e0b70552bca2ae583283bb57e18554c56f289682",
+    "file": "datalad/utils.py",
+    "function": "path_startswith",
+    "native_test_cmd": "python3 -m pytest -q datalad/tests/test_utils.py::test_path_startswith datalad/tests/test_utils.py::test_path_is_subpath",
+    "bench_cmd": "python3 osspr-intake/harness/bench_path_startswith.py",
+    "metric_kind": "allocations",
+    "baseline_value": 200006,
+    "baseline_noise_pct": 0.0,
+    "metric_benchmark": "python3 osspr-intake/harness/bench_path_startswith.py",
+    "labeled_data": null,
+    "tests_pass_on_baseline": true,
+    "workload": "100000 absolute file paths checked against their containing directory, as GitRepo._normalize_path does per path argument",
+    "notes": "Every call copies both strings in with_pathsep just to test a directory boundary. That is two object allocations per call (200000 of the 200006 counted here). A length-and-boundary check keeps isabs mismatch errors and the separator rule without those copies."
+  }
+]
