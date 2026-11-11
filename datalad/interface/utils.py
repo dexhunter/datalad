@@ -102,19 +102,23 @@ def get_tree_roots(paths):
     dict
       paths by root
     """
-    paths_ws = [_with_sep(p) for p in paths]
-    # sort all paths under their potential roots
-    roots = {}
-    # start from the top to get all paths down the line
-    # and collate them into as few roots as possible
-    for s in sorted(paths_ws):
-        if any([s.startswith(r) for r in roots]):
-            # this path is already covered by a known root
+    # visit paths in sorted order; paths under a root form a contiguous run
+    members_by_root = {}
+    root = root_ws = members = None
+    for s, i in sorted((_with_sep(p), i) for i, p in enumerate(paths)):
+        if root_ws is not None and s.startswith(root_ws):
+            members.append(i)
+        elif root is not None and s.startswith(root):
+            # this path is already covered by the last root
             continue
-        # find all sub paths
-        subs = [p for p in paths if p.startswith(s)]
-        roots[s.rstrip(sep)] = subs
-    return roots
+        else:
+            root_ws, root, members = s, s.rstrip(sep), [i]
+            members_by_root[root] = (s, members)
+    # find all sub paths, in their original order
+    return {
+        r: [paths[k] for k in sorted(m) if paths[k].startswith(s)]
+        for r, (s, m) in members_by_root.items()
+    }
 
 
 # TODO(OPT)? YOH: from a cursory review seems like possibly an expensive function
