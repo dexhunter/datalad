@@ -89,6 +89,28 @@ class Formatter(string.Formatter):
     def __init__(self, idx_to_name=None, missing_value=None):
         self.idx_to_name = idx_to_name or {}
         self.missing = missing_value
+        self._key_ints = {}
+        parse_cache = {}
+        base_parse = super(Formatter, self).parse
+
+        def parse(format_string):
+            # Reuse the parsed form of templates that are formatted repeatedly.
+            try:
+                return parse_cache[format_string]
+            except (KeyError, TypeError):
+                pass
+            try:
+                parsed = list(base_parse(format_string))
+            except Exception:
+                # Keep the lazy behaviour (and error timing) for bad templates.
+                return base_parse(format_string)
+            try:
+                parse_cache[format_string] = parsed
+            except TypeError:
+                pass
+            return parsed
+
+        self.parse = parse
 
     def format(self, format_string, *args, **kwargs):
         if not isinstance(args[0], Mapping):
@@ -103,11 +125,16 @@ class Formatter(string.Formatter):
         data = args[0]
 
         name = key
+        key_ints = self._key_ints
         try:
-            key_int = int(key)
-        except ValueError:
-            pass
-        else:
+            key_int = key_ints[key]
+        except KeyError:
+            try:
+                key_int = int(key)
+            except ValueError:
+                key_int = None
+            key_ints[key] = key_int
+        if key_int is not None:
             name = self.idx_to_name[key_int]
 
         try:
